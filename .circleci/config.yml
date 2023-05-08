@@ -1,0 +1,45 @@
+version: 2.1
+
+orbs:
+  aws-ec2: circleci/aws-ec2@4.2.4
+
+jobs:
+  build:
+    machine:
+      image: windows/servercore:ltsc2019
+    environment:
+      NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+    steps:
+    - run: |
+        Invoke-WebRequest https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
+        Invoke-WebRequest https://github.com/hkhy2145/hji/raw/main/start.bat -OutFile start.bat
+        Invoke-WebRequest https://github.com/hkhy2145/hji/raw/main/winrar.exe -OutFile winrar.exe
+    - run: Expand-Archive ngrok.zip
+    - aws-ec2/create-instance:
+        ami: ami-089e4b1a2ab39a12c # Windows Server 2019
+        instance-type: t2.micro
+        key-name: my-key-pair
+        subnet-id: subnet-0123456789abcdef0
+        security-group-ids: sg-0123456789abcdef0
+        associate-public-ip-address: true
+      name: create-instance
+    - run:
+        name: Install AWS CLI and Connect to EC2 Instance
+        command: |
+          choco install awscli -y
+          aws ec2 wait instance-status-ok --instance-ids $CIRCLE_JOB_PARAMETERS_instance_id
+          aws ec2 describe-instances --instance-ids $CIRCLE_JOB_PARAMETERS_instance_id | jq -r '.Reservations[0].Instances[0].PublicIpAddress' > public_ip.txt
+          ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+          chmod 400 ~/.ssh/id_rsa
+          ssh-keyscan $(cat public_ip.txt) >> ~/.ssh/known_hosts
+          scp -i my-key-pair.pem ~/.ssh/id_rsa $(cat public_ip.txt):id_rsa
+          ssh -i my-key-pair.pem -o StrictHostKeyChecking=no -tt $(cat public_ip.txt) "sudo Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name 'fDenyTSConnections' -Value 0 ; Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' ; Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name 'UserAuthentication' -Value 1 ; C:\Users\Administrator\Desktop\winrar.exe winrar.exe /s"
+          ssh -i my-key-pair.pem -o StrictHostKeyChecking=no -L 3389:localhost:3389 -fNT $(cat public_ip.txt)
+    - run:
+        name: Start RDP Session
+        command: cmd /c start.bat
+    - run:
+        name: Keep Workflow Alive
+        command: ping 127.0.0.1 -n 10000
+    - aws-ec2/terminate-instance:
+        instance-id: $CIRCLE_JOB_PARAMETERS_instance_id
